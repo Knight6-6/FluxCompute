@@ -193,4 +193,57 @@ void min_axis(const T* input, T* output,
         input, output, outer_size, axis_size, inner_size, detail::min_identity<T>());
 }
 
+// ---------------------------------------------------------------------------
+// 通用归约：由调用方给出二元算子与单位元，沿轴（或全量）左折叠。
+//
+// 与上面的 sum/mean/max/min 有两点关键差别：
+//
+// 1. **不跳过 NaN。** 那四个有 pandas skipna 语义，是因为它们知道 NaN 对
+//    加法/求均值/求极值意味着"不参与"。通用归约拿到的是任意二元算子，
+//    无从知道它该怎么处理 NaN，所以一律照常参与折叠。这与 pandas 的
+//    agg/reduce 对自定义函数的行为一致（那里的 skipna 也不生效）。
+//
+// 2. **单位元必须由调用方显式给出**，不能靠 T{} 兜底。求和用 0 没问题，
+//    但求最大值的单位元是 lowest()——用 0 会让全负切片取到错误的 0。
+//    这个坑在 extremum 处踩过一次（见 test_max_int_negatives 的回归注释）。
+//
+// 折叠顺序固定为从左到右的左折叠 op(op(identity, x0), x1)...，对减法、
+// 拼接这类非交换算子结果确定，不依赖编译器的结合律假设。
+//
+// 不加 simd 提示：任意二元算子未必可向量化，而向编译器做无依据的承诺
+// 比不优化更糟。按"先正确、再优化"，待 benchmark 确认是瓶颈后再单议。
+// ---------------------------------------------------------------------------
+
+template <typename T, typename BinaryOp>
+T reduce_all(const T* input, std::size_t size, BinaryOp op, T identity) {
+    T acc = identity;
+    for (std::size_t i = 0; i < size; ++i) {
+        acc = op(acc, input[i]);
+    }
+    return acc;
+}
+
+template <typename T, typename BinaryOp>
+void reduce_axis(const T* input, T* output,
+                 std::size_t outer_size,
+                 std::size_t axis_size,
+                 std::size_t inner_size,
+                 BinaryOp op, T identity) {
+
+    // 循环序 o/i/a：每个切片的折叠累加器是标量，不需要 per-slice 缓冲。
+    // 与 rolling_mean_axis / rank_axis / mean_axis / extremum_axis 同一形态。
+    for (std::size_t o = 0; o < outer_size; ++o) {
+        for (std::size_t i = 0; i < inner_size; ++i) {
+            const std::size_t base = o * axis_size * inner_size + i;
+
+            T acc = identity;
+            for (std::size_t a = 0; a < axis_size; ++a) {
+                acc = op(acc, input[base + a * inner_size]);
+            }
+
+            output[o * inner_size + i] = acc;
+        }
+    }
+}
+
 }
