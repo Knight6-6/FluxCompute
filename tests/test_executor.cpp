@@ -28,6 +28,17 @@ std::size_t count_operators(const graph::Graph<float>& g) {
     return n;
 }
 
+// 逐元素比较，NaN 视为相等（shift 会产出 NaN，用 == 直接比会误报）
+bool same(const tensor::Tensor<float>& a, const tensor::Tensor<float>& b) {
+    if (a.numel() != b.numel()) return false;
+    for (std::size_t i = 0; i < a.numel(); ++i) {
+        const float x = a[i], y = b[i];
+        if (std::isnan(x) && std::isnan(y)) continue;
+        if (x != y) return false;
+    }
+    return true;
+}
+
 void test_factor_graph() {
     // close -> shift(1) -> sub(close - shift) -> rolling_mean(3) -> factor
     graph::Graph<float> g;
@@ -430,6 +441,178 @@ void test_set_input_materializes_exactly_one() {
     CHECK_EQ(after.calls - before.calls, static_cast<std::size_t>(2));
 }
 
+// ---------------------------------------------------------------------------
+// 按依赖分层 + 并行执行
+// ---------------------------------------------------------------------------
+
+void test_topological_layers() {
+    // 1 输入 -> 2 个互不依赖的算子 -> 2 输出，应当分成 3 层
+    graph::Graph<float> g;
+    auto in  = g.create_node("in", graph::NodeType::Input);
+    auto sh  = g.create_node("sh", graph::NodeType::Operator);
+    auto ml  = g.create_node("ml", graph::NodeType::Operator);
+    auto osh = g.create_node("osh", graph::NodeType::Output);
+    auto oml = g.create_node("oml", graph::NodeType::Output);
+    g.add_edge(in, sh);  g.add_edge(in, ml);
+    g.add_edge(sh, osh); g.add_edge(ml, oml);
+
+    auto layers = g.topological_layers();
+    CHECK_EQ(layers.size(), static_cast<std::size_t>(3));
+    CHECK_EQ(layers[0].size(), static_cast<std::size_t>(1));   // in
+    CHECK_EQ(layers[1].size(), static_cast<std::size_t>(2));   // sh, ml 可并行
+    CHECK_EQ(layers[2].size(), static_cast<std::size_t>(2));   // osh, oml
+    CHECK_EQ(layers[0][0]->id, in->id);
+}
+
+void test_topological_layers_chain_is_linear() {
+    // 链式图每层只有一个节点——没有并行空间，也没有分层错误
+    graph::Graph<float> g;
+    auto a = g.create_node("a", graph::NodeType::Input);
+    auto b = g.create_node("b", graph::NodeType::Operator);
+    auto c = g.create_node("c", graph::NodeType::Operator);
+    g.add_edge(a, b); g.add_edge(b, c);
+
+    auto layers = g.topological_layers();
+    CHECK_EQ(layers.size(), static_cast<std::size_t>(3));
+    for (const auto& l : layers) CHECK_EQ(l.size(), static_cast<std::size_t>(1));
+}
+
+void test_topological_layers_cycle_throws() {
+    // 分层是执行调度的一部分，环必须在这里拦下（不像拓扑排序那样留到执行期）
+    graph::Graph<float> g;
+    auto a = g.create_node("a", graph::NodeType::Operator);
+    auto b = g.create_node("b", graph::NodeType::Operator);
+    g.add_edge(a, b);
+    g.add_edge(b, a);
+
+    bool threw = false;
+    try {
+        (void)g.topological_layers();
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    CHECK(threw);
+
+    a->inputs.clear();   // 打断所有权环，避免析构泄漏
+    b->inputs.clear();
+}
+
+void test_parallel_matches_sequential() {
+    // 同一张扇出图，两条路径必须给出完全相同的结果
+    graph::Graph<float> g;
+    auto in  = g.create_node("in", graph::NodeType::Input);
+    auto sh  = g.create_node("sh", graph::NodeType::Operator);
+    auto ml  = g.create_node("ml", graph::NodeType::Operator);
+    auto osh = g.create_node("osh", graph::NodeType::Output);
+    auto oml = g.create_node("oml", graph::NodeType::Output);
+    g.add_edge(in, sh);  g.add_edge(in, ml);
+    g.add_edge(sh, osh); g.add_edge(ml, oml);
+    g.bind_op(sh, [](const std::vector<tensor::TensorPtr<float>>& i) { return ops::shift(*i[0], 1); });
+    g.bind_op(ml, [](const std::vector<tensor::TensorPtr<float>>& i) { return ops::mul(*i[0], *i[0]); });
+
+    // 注意 Tensor 的双参构造接受的是 ContainerType（带对齐分配器的 vector），
+    // 不是裸 std::vector<float>，所以这里构造后填充。
+    tensor::Tensor<float> data(tensor::Shape({64}));
+    for (std::size_t i = 0; i < data.numel(); ++i) data[i] = 3.f;
+
+    runtime::Executor<float> seq;
+    seq.set_input(in, data);
+    seq.run(g);
+    const auto seq_sh = seq.get_output(osh);
+    const auto seq_ml = seq.get_output(oml);
+
+    runtime::Executor<float> par;
+    par.set_input(in, data);
+    runtime::ThreadPool pool(4);
+    par.run_parallel(g, pool);
+    const auto par_sh = par.get_output(osh);
+    const auto par_ml = par.get_output(oml);
+
+    CHECK(same(*seq_sh, *par_sh));
+    CHECK(same(*seq_ml, *par_ml));
+    CHECK_EQ((*par_ml)[0], 9.f);   // 3 * 3
+}
+
+void test_parallel_chain_gives_same_result() {
+    // 链式图在并行路径下退化为逐层单节点执行，结果必须一致
+    graph::Graph<float> g;
+    auto in  = g.create_node("in", graph::NodeType::Input);
+    auto a   = g.create_node("a", graph::NodeType::Operator);
+    auto b   = g.create_node("b", graph::NodeType::Operator);
+    auto out = g.create_node("out", graph::NodeType::Output);
+    g.add_edge(in, a); g.add_edge(a, b); g.add_edge(b, out);
+    g.bind_op(a, [](const std::vector<tensor::TensorPtr<float>>& i) { return ops::mul(*i[0], *i[0]); });
+    g.bind_op(b, [](const std::vector<tensor::TensorPtr<float>>& i) { return ops::shift(*i[0], 1); });
+
+    runtime::Executor<float> ex;
+    ex.set_input(in, tensor::Tensor<float>(tensor::Shape({4}), {1, 2, 3, 4}));
+    runtime::ThreadPool pool(4);
+    ex.run_parallel(g, pool);
+
+    const auto r = ex.get_output(out);
+    CHECK(std::isnan((*r)[0]));
+    CHECK_EQ((*r)[1], 1.f);    // 1*1
+    CHECK_EQ((*r)[2], 4.f);    // 2*2
+    CHECK_EQ((*r)[3], 9.f);    // 3*3
+}
+
+void test_parallel_propagates_exception() {
+    // 层内某个节点抛异常，必须从 run_parallel 抛出来而不是被 worker 吞掉
+    graph::Graph<float> g;
+    auto in   = g.create_node("in", graph::NodeType::Input);
+    auto bad  = g.create_node("bad", graph::NodeType::Operator);
+    auto good = g.create_node("good", graph::NodeType::Operator);
+    auto o1   = g.create_node("o1", graph::NodeType::Output);
+    auto o2   = g.create_node("o2", graph::NodeType::Output);
+    g.add_edge(in, bad);  g.add_edge(in, good);
+    g.add_edge(bad, o1);  g.add_edge(good, o2);
+
+    g.bind_op(bad, [](const std::vector<tensor::TensorPtr<float>>&) -> tensor::Tensor<float> {
+        throw std::runtime_error("boom");
+    });
+    g.bind_op(good, [](const std::vector<tensor::TensorPtr<float>>& i) { return ops::mul(*i[0], *i[0]); });
+
+    runtime::Executor<float> ex;
+    ex.set_input(in, tensor::Tensor<float>(tensor::Shape({4}), {1, 2, 3, 4}));
+    runtime::ThreadPool pool(4);
+
+    bool threw = false;
+    try {
+        ex.run_parallel(g, pool);
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
+void test_parallel_rerun_is_stable() {
+    // 可重复调用，且与串行路径结果一致
+    graph::Graph<float> g;
+    auto in  = g.create_node("in", graph::NodeType::Input);
+    auto m1  = g.create_node("m1", graph::NodeType::Operator);
+    auto m2  = g.create_node("m2", graph::NodeType::Operator);
+    auto out = g.create_node("out", graph::NodeType::Output);
+    g.add_edge(in, m1); g.add_edge(in, m2); g.add_edge(m1, out);
+    g.bind_op(m1, [](const std::vector<tensor::TensorPtr<float>>& i) { return ops::mul(*i[0], *i[0]); });
+    g.bind_op(m2, [](const std::vector<tensor::TensorPtr<float>>& i) { return ops::mul(*i[0], *i[0]); });
+
+    runtime::Executor<float> ex;
+    runtime::ThreadPool pool(4);
+    ex.set_input(in, tensor::Tensor<float>(tensor::Shape({4}), {1, 2, 3, 4}));
+
+    ex.run_parallel(g, pool);
+    const auto r1 = ex.get_output(out);
+
+    ex.set_input(in, tensor::Tensor<float>(tensor::Shape({4}), {5, 6, 7, 8}));
+    ex.run_parallel(g, pool);
+    const auto r2 = ex.get_output(out);
+
+    CHECK_EQ((*r1)[0], 1.f);
+    CHECK_EQ((*r2)[0], 25.f);
+    // r1 跨第二次 run 依然有效（get_output 返回持有所有权的句柄）
+    CHECK_EQ((*r1)[0], 1.f);
+}
+
 } // namespace
 
 int main() {
@@ -449,5 +632,12 @@ int main() {
     test_no_edge_copies();
     test_executor_is_container_friendly();
     test_set_input_materializes_exactly_one();
+    test_topological_layers();
+    test_topological_layers_chain_is_linear();
+    test_topological_layers_cycle_throws();
+    test_parallel_matches_sequential();
+    test_parallel_chain_gives_same_result();
+    test_parallel_propagates_exception();
+    test_parallel_rerun_is_stable();
     return flux_test::summary();
 }

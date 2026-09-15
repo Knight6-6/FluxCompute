@@ -45,9 +45,10 @@ inline double time_once_ms(F& body) {
     return std::chrono::duration<double, std::milli>(t1 - t0).count();
 }
 
-// reps 次取最小。body 需自行用 keep() 保住结果。
+// reps 次取最小，只返回不记录。需要对两个实现做比值时用它。
+// body 需自行用 keep() 保住结果。
 template <typename F>
-void bench(const std::string& name, std::size_t reps, F body) {
+double best_ms(std::size_t reps, F body) {
     body();   // warmup，不计入
 
     double best = 1e300;
@@ -55,7 +56,12 @@ void bench(const std::string& name, std::size_t reps, F body) {
         const double ms = time_once_ms(body);
         if (ms < best) best = ms;
     }
-    entries().push_back({name, best});
+    return best;
+}
+
+template <typename F>
+void bench(const std::string& name, std::size_t reps, F body) {
+    entries().push_back({name, best_ms(reps, body)});
 }
 
 inline int report(const char* title) {
