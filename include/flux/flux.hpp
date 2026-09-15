@@ -16,6 +16,7 @@
 #include <flux/operator/max.hpp>
 #include <flux/operator/min.hpp>
 #include <flux/operator/reduce.hpp>
+#include <flux/operator/scan.hpp>
 #include <flux/operator/shift.hpp>
 #include <flux/operator/rolling.hpp>
 #include <flux/operator/sort.hpp>

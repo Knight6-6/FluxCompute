@@ -3,6 +3,7 @@
 set(test_sources
     test_elementwise
     test_reduce
+    test_scan
     test_sum
     test_shift
     test_rolling
