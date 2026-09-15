@@ -3,8 +3,18 @@
 
 #include <cmath>
 #include <stdexcept>
+#include <type_traits>
+#include <vector>
 
 using namespace flux;
+
+// Executor 不持有线程池等独占资源，因此可自由拷贝/移动。
+// 这同时是一道防线：若有人把 ThreadPool 按值塞回 Executor，ThreadPool 持有
+// vector<thread> 且声明了析构函数，会让 Executor 丧失移动能力，这里立刻编译失败。
+static_assert(std::is_move_constructible<runtime::Executor<float>>::value,
+              "Executor 应当可移动");
+static_assert(std::is_copy_constructible<runtime::Executor<float>>::value,
+              "Executor 应当可拷贝");
 
 namespace {
 
@@ -377,6 +387,30 @@ void test_no_edge_copies() {
     CHECK_EQ(after.calls - before.calls, expected);
 }
 
+void test_executor_is_container_friendly() {
+    // 回归：Executor 曾经因为按值持有 ThreadPool 而既不可拷贝也不可移动，
+    // 下面这个 vector + reserve 的写法当时根本编译不过。
+    // 顺带也说明构造 Executor 不再会拉起满核线程（实测曾是 1 -> 17）。
+    std::vector<runtime::Executor<float>> executors;
+    executors.reserve(4);
+    for (int i = 0; i < 4; ++i) executors.emplace_back();
+
+    graph::Graph<float> g;
+    auto in  = g.create_node("Input", graph::NodeType::Input);
+    auto out = g.create_node("Output", graph::NodeType::Output);
+    g.add_edge(in, out);
+
+    executors[0].set_input(in, tensor::Tensor<float>(tensor::Shape({2}), {7, 8}));
+    executors[0].run(g);
+    CHECK_EQ((*executors[0].get_output(out))[0], 7.f);
+    CHECK_EQ((*executors[0].get_output(out))[1], 8.f);
+
+    // 拷一份独立执行，互不干扰
+    runtime::Executor<float> copy = executors[0];
+    copy.run(g);
+    CHECK_EQ((*copy.get_output(out))[0], 7.f);
+}
+
 void test_set_input_materializes_exactly_one() {
     // 注入是"每次一个缓冲区"，与图的规模无关：这条把 set_input 的拷贝
     // 钉成契约（见 test_input_snapshot_isolated_from_caller 说明它为何必要）。
@@ -413,6 +447,7 @@ int main() {
     test_rerun_new_inputs();
     test_output_passthrough_shares();
     test_no_edge_copies();
+    test_executor_is_container_friendly();
     test_set_input_materializes_exactly_one();
     return flux_test::summary();
 }

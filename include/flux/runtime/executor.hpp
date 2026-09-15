@@ -1,7 +1,6 @@
 #pragma once
 
 #include <flux/graph/graph.hpp>
-#include <flux/runtime/thread_pool.hpp>
 #include <unordered_map>
 #include <stdexcept>
 #include <string>
@@ -19,11 +18,21 @@ namespace flux::runtime {
 // 不变量——张量一旦发布即不可变（见 tensor::TensorPtr 的 const），
 // 因此共享不会退化成别名 bug。
 //
-// 本阶段同步、顺序执行；ThreadPool 成员为后续并行调度预留。
+// 本阶段同步、顺序执行，Executor 不持有任何独占资源——它只是两个 map，
+// 因此可以廉价创建、自由拷贝/移动。
+//
+// 关于线程池：这里刻意**不**持有 ThreadPool。按值内嵌一个线程池意味着每构造
+// 一个 Executor 就起满 hardware_concurrency 个线程，而当前一个都不用（实测：
+// 构造 1 个 Executor 让进程线程数从 1 涨到 17，12 个则到 193），同时因为
+// ThreadPool 持有 vector<thread> 且声明了析构函数，Executor 会连带变成
+// 不可拷贝、不可移动，连放进 std::vector 都编不过。
+//
+// 并行调度落地时（按依赖层并行）再引入线程池，届时才谈得上决定它的归属：
+// 每个 Executor 一个、外部注入、还是进程级共享。在没有消费者之前先定这个
+// 是空想，所以先不建机制。
 template <typename T>
 class Executor {
 private:
-    ThreadPool thread_pool_;                                       // 本阶段未使用，为并行调度预留
     std::unordered_map<std::size_t, tensor::TensorPtr<T>> inputs_;  // set_input 绑定，跨 run 保留
     std::unordered_map<std::size_t, tensor::TensorPtr<T>> values_;  // 本次 run 的节点输出
 
