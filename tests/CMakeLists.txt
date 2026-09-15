@@ -2,7 +2,7 @@
 # 新增测试：往 test_sources 里加一项即可。
 set(test_sources
     test_elementwise
-    test_reduce
+    test_sum
     test_shift
     test_rolling
     test_executor
@@ -12,6 +12,7 @@ set(test_sources
     test_sort
     test_rank
     test_memory
+    test_tensor
 )
 
 foreach(t ${test_sources})

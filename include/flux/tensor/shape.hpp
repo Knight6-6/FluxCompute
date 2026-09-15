@@ -19,7 +19,11 @@ public:
         
         auto stride = numel_;
         for (std::size_t i = 0; i < dimensions_.size(); ++i) {
-            stride /= dimensions_[i];
+            // 任一维为 0 时 numel_ 已经是 0，该维的 stride 语义上无定义
+            // （根本没有元素可寻址）。直接做 0/0 是整数除零，会 SIGFPE 干掉
+            // 整个进程——而零长度维度在真实数据里很常见（空交易日、
+            // 没有标的通过筛选）。显式置 0，让空张量能正常构造与传递。
+            stride = (dimensions_[i] == 0) ? 0 : (stride / dimensions_[i]);
             strides_.push_back(stride);
         }
     }
