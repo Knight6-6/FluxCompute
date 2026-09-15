@@ -6,6 +6,7 @@
 #include <utility>
 #include <stdexcept>
 #include <cstddef>
+#include <memory>
 
 namespace flux::tensor {
 
@@ -41,5 +42,13 @@ public:
     T& operator[](std::size_t idx) { return data_[idx]; }
     const T& operator[](std::size_t idx) const { return data_[idx]; }
 };
+
+// 计算图中边上传递的共享句柄。一次计算只物化一次，下游共享同一份数据。
+//
+// const 承载的是不变量，不是防御性写法：Executor 的零拷贝安全性完全建立在
+// "张量一旦发布即不可变"之上——消费者拿到的若可变，扇出就成了别名 bug。
+// 因此只提供这一个别名，不要另加 shared_ptr<Tensor<T>>（可变）版本。
+template <typename T>
+using TensorPtr = std::shared_ptr<const Tensor<T>>;
 
 }
