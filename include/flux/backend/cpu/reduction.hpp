@@ -1,5 +1,6 @@
 #pragma once
 #include <cstddef>
+#include <flux/backend/cpu/isa_dispatch.hpp>
 #include <algorithm>
 #include <cmath>
 #include <functional>
@@ -12,6 +13,7 @@ namespace flux::backend::cpu {
 // sum 的空集语义本就是 0（pandas 对全 NaN 切片求和同样为 0），
 // 因此无需额外计数，total 保持初值即可。
 template <typename T>
+FLUX_TARGET_CLONES_GCC
 T sum_all(const T* input, std::size_t size) {
     T total{};
     #pragma omp simd reduction(+:total)
@@ -23,6 +25,7 @@ T sum_all(const T* input, std::size_t size) {
 }
 
 template <typename T>
+FLUX_TARGET_CLONES_GCC
 void sum_axis(const T* input, T* output, std::size_t outer_size, std::size_t axis_size,  std::size_t inner_size) {
     
     std::fill_n(output, outer_size * inner_size, T{0});
@@ -47,6 +50,7 @@ void sum_axis(const T* input, T* output, std::size_t outer_size, std::size_t axi
 // ---------------------------------------------------------------------------
 
 template <typename T>
+FLUX_TARGET_CLONES_GCC
 T mean_all(const T* input, std::size_t size) {
     T sum{};
     std::size_t valid = 0;
@@ -66,6 +70,7 @@ T mean_all(const T* input, std::size_t size) {
 }
 
 template <typename T>
+FLUX_TARGET_CLONES_GCC
 void mean_axis(const T* input, T* output,
                std::size_t outer_size,
                std::size_t axis_size,
