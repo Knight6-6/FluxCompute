@@ -3,6 +3,8 @@
 
 #include <cmath>
 #include <stdexcept>
+#include <future>
+#include <memory>
 #include <type_traits>
 #include <vector>
 
@@ -613,6 +615,102 @@ void test_parallel_rerun_is_stable() {
     CHECK_EQ((*r1)[0], 1.f);
 }
 
+// ---------------------------------------------------------------------------
+// 异步执行
+// ---------------------------------------------------------------------------
+
+void test_async_matches_sync() {
+    graph::Graph<float> g;
+    auto in  = g.create_node("in", graph::NodeType::Input);
+    auto m   = g.create_node("m", graph::NodeType::Operator);
+    auto out = g.create_node("out", graph::NodeType::Output);
+    g.add_edge(in, m); g.add_edge(m, out);
+    g.bind_op(m, [](const std::vector<tensor::TensorPtr<float>>& i) { return ops::mul(*i[0], *i[0]); });
+
+    const tensor::Tensor<float> data(tensor::Shape({4}), {1, 2, 3, 4});
+
+    runtime::Executor<float> sync;
+    sync.set_input(in, data);
+    sync.run(g);
+    const auto expect = sync.get_output(out);
+
+    // 注意：Executor 必须活到 future 就绪——契约之一
+    runtime::Executor<float> async;
+    async.set_input(in, data);
+    runtime::ThreadPool pool(2);
+    auto fut = async.run_async(g, pool);
+    fut.get();   // 就绪后才能取结果
+
+    CHECK(same(*expect, *async.get_output(out)));
+}
+
+void test_async_propagates_exception() {
+    // 节点里抛的异常必须经由 future 重抛，不能被后台线程吞掉
+    graph::Graph<float> g;
+    auto in  = g.create_node("in", graph::NodeType::Input);
+    auto bad = g.create_node("bad", graph::NodeType::Operator);
+    auto out = g.create_node("out", graph::NodeType::Output);
+    g.add_edge(in, bad); g.add_edge(bad, out);
+    g.bind_op(bad, [](const std::vector<tensor::TensorPtr<float>>&) -> tensor::Tensor<float> {
+        throw std::runtime_error("boom");
+    });
+
+    runtime::Executor<float> ex;
+    ex.set_input(in, tensor::Tensor<float>(tensor::Shape({2}), {1, 2}));
+    runtime::ThreadPool pool(2);
+
+    bool threw = false;
+    try {
+        ex.run_async(g, pool).get();
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
+void test_async_multiple_tasks_concurrently() {
+    // 异步的主要用法：多组任务同时在池里跑。这里用 4 组参数验证各自结果正确
+    // ——并发正确性由 TSan 覆盖，这里盯的是"结果没有串台"。
+    auto make_graph = [](std::shared_ptr<graph::Node<float>>& in,
+                         std::shared_ptr<graph::Node<float>>& out) {
+        auto g = std::make_shared<graph::Graph<float>>();
+        in  = g->create_node("in", graph::NodeType::Input);
+        auto m = g->create_node("m", graph::NodeType::Operator);
+        out = g->create_node("out", graph::NodeType::Output);
+        g->add_edge(in, m); g->add_edge(m, out);
+        g->bind_op(m, [](const std::vector<tensor::TensorPtr<float>>& i) { return ops::mul(*i[0], *i[0]); });
+        return g;
+    };
+
+    runtime::ThreadPool pool(4);
+
+    // Executor 与 Graph 都要活到 future 就绪，所以先全部建好再一并 get()
+    std::vector<std::shared_ptr<graph::Graph<float>>> graphs;
+    std::vector<std::shared_ptr<graph::Node<float>>> ins, outs;
+    std::vector<std::unique_ptr<runtime::Executor<float>>> execs;
+    std::vector<std::future<void>> futures;
+
+    const float seeds[4] = {2.f, 3.f, 4.f, 5.f};
+    for (int k = 0; k < 4; ++k) {
+        std::shared_ptr<graph::Node<float>> in, out;
+        graphs.push_back(make_graph(in, out));
+        ins.push_back(in);
+        outs.push_back(out);
+
+        auto ex = std::make_unique<runtime::Executor<float>>();
+        ex->set_input(in, tensor::Tensor<float>(tensor::Shape({3}), {seeds[k], seeds[k], seeds[k]}));
+        futures.push_back(ex->run_async(*graphs.back(), pool));
+        execs.push_back(std::move(ex));
+    }
+
+    for (auto& f : futures) f.get();
+
+    for (int k = 0; k < 4; ++k) {
+        const auto r = execs[k]->get_output(outs[k]);
+        CHECK_EQ((*r)[0], seeds[k] * seeds[k]);
+    }
+}
+
 } // namespace
 
 int main() {
@@ -639,5 +737,8 @@ int main() {
     test_parallel_chain_gives_same_result();
     test_parallel_propagates_exception();
     test_parallel_rerun_is_stable();
+    test_async_matches_sync();
+    test_async_propagates_exception();
+    test_async_multiple_tasks_concurrently();
     return flux_test::summary();
 }

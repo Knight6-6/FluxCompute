@@ -131,6 +131,53 @@ int main() {
         compare("sort", width, 262144, sort_op, hw, 3);
     }
 
+    // --- 异步：参数搜索形态（多组任务同时在池里跑）---
+    // 这是 run_async 的主要用途。注意每组内部是**顺序执行**的——并行来自
+    // "多个任务同时在池里"，而不是单个任务内部的图内并行。两处并行叠加
+    // 会向同一个池嵌套提交，实测会死锁（见 executor.hpp 的说明）。
+    std::printf("\n-- 异步：16 组任务（每组 sort 256K），%u 线程 --\n", hw);
+    {
+        const std::size_t n = 262144;
+        const int groups = 16;
+        const auto data = make_data(n);
+
+        auto g = std::make_shared<graph::Graph<float>>();
+        auto g_in  = g->create_node("in", graph::NodeType::Input);
+        auto g_sort= g->create_node("sort", graph::NodeType::Operator);
+        auto g_out = g->create_node("out", graph::NodeType::Output);
+        g->add_edge(g_in, g_sort);
+        g->add_edge(g_sort, g_out);
+        g->bind_op(g_sort, [](const std::vector<tensor::TensorPtr<float>>& i) {
+            return ops::sort(*i[0]);
+        });
+
+        const double serial = flux_bench::best_ms(3, [&] {
+            std::vector<std::unique_ptr<runtime::Executor<float>>> exs;
+            for (int k = 0; k < groups; ++k) {
+                auto ex = std::make_unique<runtime::Executor<float>>();
+                ex->set_input(g_in, data);
+                ex->run(*g);
+                exs.push_back(std::move(ex));
+            }
+        });
+
+        runtime::ThreadPool pool(hw);
+        const double async_ms = flux_bench::best_ms(3, [&] {
+            std::vector<std::unique_ptr<runtime::Executor<float>>> exs;
+            std::vector<std::future<void>> futs;
+            for (int k = 0; k < groups; ++k) {
+                auto ex = std::make_unique<runtime::Executor<float>>();
+                ex->set_input(g_in, data);
+                futs.push_back(ex->run_async(*g, pool));
+                exs.push_back(std::move(ex));
+            }
+            for (auto& f : futs) f.get();
+        });
+
+        std::printf("  串行 run()        %8.3f ms\n", serial);
+        std::printf("  异步 run_async()  %8.3f ms   加速比 %5.2fx\n\n", async_ms, serial / async_ms);
+    }
+
     // --- 池的并发分配：并行落地前的前置问题 ---
     std::printf("\n-- MemoryPool 并发分配（单次 4KB，每线程 200k 轮）--\n");
     std::printf("   （注意：这是退化场景——纯分配无计算。真实负载里分配之间有计算掩盖）\n");
