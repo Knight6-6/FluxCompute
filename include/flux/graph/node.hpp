@@ -15,7 +15,11 @@ enum class NodeType { Input, Operator, Output };
 // 在绑定阶段按值捕获进闭包；Input 节点的 op 为空，数据由 Executor 注入。
 template <typename T>
 struct Node {
-    using OpFn = std::function<tensor::Tensor<T>(const std::vector<tensor::Tensor<T>>&)>;
+    // 输入以共享句柄传入：上游输出在整张图中只物化一次，扇出共享。
+    // 输出仍按值返回——算子产出的是新张量，没有拷贝可省，也正因如此
+    // ops::* 的对外签名（const Tensor<T>& 进、Tensor<T> 出）保持不变，
+    // 引用语义不会渗进算子层。
+    using OpFn = std::function<tensor::Tensor<T>(const std::vector<tensor::TensorPtr<T>>&)>;
 
     std::size_t id;
     std::string name;

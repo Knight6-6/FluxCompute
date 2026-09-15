@@ -28,17 +28,19 @@ int main() {
     g.add_edge(n_roll, n_output);
 
     // 绑定算子闭包：标量参数在构建期按值捕获
-    g.bind_op(n_shift, [](const std::vector<tensor::Tensor<float>>& ins) {
+    // 闭包收到的是共享句柄（上游输出只物化一次，扇出共享），故解引用后
+    // 交给算子。ops::* 本身仍是值语义，引用不会渗进算子层。
+    g.bind_op(n_shift, [](const std::vector<tensor::TensorPtr<float>>& ins) {
         if (ins.size() != 1) throw std::runtime_error("shift expects 1 input");
-        return ops::shift(ins[0], /*offset=*/1);
+        return ops::shift(*ins[0], /*offset=*/1);
     });
-    g.bind_op(n_sub, [](const std::vector<tensor::Tensor<float>>& ins) {
+    g.bind_op(n_sub, [](const std::vector<tensor::TensorPtr<float>>& ins) {
         if (ins.size() != 2) throw std::runtime_error("sub expects 2 inputs");
-        return ops::sub(ins[0], ins[1]);  // close - shift(close)
+        return ops::sub(*ins[0], *ins[1]);  // close - shift(close)
     });
-    g.bind_op(n_roll, [](const std::vector<tensor::Tensor<float>>& ins) {
+    g.bind_op(n_roll, [](const std::vector<tensor::TensorPtr<float>>& ins) {
         if (ins.size() != 1) throw std::runtime_error("rolling_mean expects 1 input");
-        return ops::rolling_mean(ins[0], /*window=*/3);
+        return ops::rolling_mean(*ins[0], /*window=*/3);
     });
 
     // 3. Runtime 调度执行
@@ -47,10 +49,11 @@ int main() {
     executor.set_input(n_input, close);
     executor.run(g);
 
-    const auto& factor = executor.get_output(n_output);
+    // get_output 按值返回 shared_ptr：持有它即持有所有权，跨 run 也有效。
+    const auto factor = executor.get_output(n_output);
     std::cout << "\n[FluxCompute] Factor = rolling_mean(close - shift(close, 1), window=3):\n";
-    for (std::size_t i = 0; i < factor.numel(); ++i) {
-        std::cout << (std::isnan(factor[i]) ? " nan" : (" " + std::to_string(factor[i])));
+    for (std::size_t i = 0; i < factor->numel(); ++i) {
+        std::cout << (std::isnan((*factor)[i]) ? " nan" : (" " + std::to_string((*factor)[i])));
     }
     std::cout << std::endl;
 
