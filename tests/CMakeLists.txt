@@ -2,6 +2,7 @@
 # 新增测试：往 test_sources 里加一项即可。
 set(test_sources
     test_elementwise
+    test_map
     test_reduce
     test_scan
     test_sum

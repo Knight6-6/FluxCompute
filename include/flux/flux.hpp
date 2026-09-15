@@ -7,6 +7,7 @@
 
 #include <flux/operator/axis_util.hpp>
 #include <flux/operator/binary_elementwise.hpp>
+#include <flux/operator/map.hpp>
 #include <flux/operator/add.hpp>
 #include <flux/operator/sub.hpp>
 #include <flux/operator/mul.hpp>

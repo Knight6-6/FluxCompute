@@ -17,6 +17,9 @@ target_link_libraries(bench_memory PRIVATE flux)
 
 # 同一个源文件编两份：一份带 -fopenmp，一份不带。
 # 两者的差就是 `#pragma omp simd` 的净效果——见 bench_elementwise.cpp 顶部说明。
+add_executable(bench_fusion bench_fusion.cpp)
+target_link_libraries(bench_fusion PRIVATE flux)
+
 add_executable(bench_parallel bench_parallel.cpp)
 target_link_libraries(bench_parallel PRIVATE flux)
 
