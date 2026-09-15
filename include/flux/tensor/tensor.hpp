@@ -2,6 +2,7 @@
 
 #include <flux/tensor/shape.hpp>
 #include <flux/memory/aligned_allocator.hpp>
+#include <flux/memory/memory_pool.hpp>
 #include <vector>
 #include <utility>
 #include <stdexcept>
@@ -13,7 +14,7 @@ namespace flux::tensor {
 template <typename T>
 class Tensor {
 public:
-    using ContainerType = std::vector<T, flux::memory::AlignedAllocator<T, 64>>;
+    using ContainerType = std::vector<T, flux::memory::PooledAllocator<T>>;
 
 private:
     Shape shape_;

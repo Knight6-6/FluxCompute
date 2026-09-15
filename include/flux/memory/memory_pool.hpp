@@ -11,7 +11,7 @@ namespace flux::memory {
 // 布局：按字节尺寸（Size Class）组织空闲的对齐内存块。
 //
 // 定位：给"短生命周期、反复申请/释放同一批尺寸"的场景复用缓冲区，典型是
-// 计算图执行期的中间张量。默认不启用，理由见下方 PooledAllocator。
+// 计算图执行期的中间张量。它是 Tensor 的默认分配器，理由见下方 PooledAllocator。
 //
 // 两个已知取舍，启用前需要知道：
 //   1. 全局单例 + 一把 mutex。单线程下开销很低，但多线程并发分配会互相争抢；
@@ -89,14 +89,21 @@ private:
     std::unordered_map<std::size_t, std::vector<void*>> free_blocks_;
 };
 
-// 走 MemoryPool 的分配器，与 AlignedAllocator<T, Alignment> 可互换。
+// 走 MemoryPool 的分配器。**它就是 Tensor 的默认分配器。**
 //
-// **默认不启用。** 池化是否更快取决于分配竞争与换入换出，必须由 benchmark
-// 判定，而本项目尚未建立 benchmark（README 原则 #4：不在没有 Benchmark 的
-// 情况下盲目优化）。此外 MemoryPool 目前是全局单例 + 一把锁，直接用于按依赖层
-// 并行执行会变成争抢点。
+// 这个决定是 benchmark 逼出来的，不是性能洁癖：图执行每轮都新建/释放中间
+// 张量，直连分配会落进 glibc 的 mmap/munmap 路径——每轮 2016 次缺页，占掉
+// 约 75% 的执行时间。池化把缺页降到 0，扇出图 4.39 -> 0.99 ms/轮（4.4 倍）。
+// 完整证据与推理见 docs/设计问题与取舍.md。
 //
-// 因此这里只提供接缝：需要时在具体类型上显式指定即可，不改 Tensor 的默认行为。
+// 已知代价，改动它之前需要知道：
+//   1. 全局单例 + 一把 mutex。单线程下开销很低，但多线程并发分配会互相争抢；
+//      若要用于按依赖层并行执行，需要先换成分片锁或线程本地池。
+//   2. 回收的内存不还给 OS，直到进程退出才统一释放，峰值占用会一直留着。
+//   3. **静态析构顺序**：MemoryPool 是函数局部静态。若使用方在命名空间作用域
+//      持有 Tensor，它的析构可能发生在池销毁之后，那次 deallocate 就是
+//      use-after-destruction。真出现那种用法，得把单例改成"故意不析构"
+//      （并相应处理 LeakSanitizer 的误报）。
 //
 // 与 AlignedAllocator 的差别仅在分配来源；对齐仍由 MemoryPool 固定为 64 字节，
 // 所以只接受 Alignment <= 64 的请求。

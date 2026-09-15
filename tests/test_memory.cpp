@@ -100,16 +100,27 @@ void test_pooled_allocator_records_allocations() {
     CHECK_EQ(after.calls - before.calls, static_cast<std::size_t>(1));
 }
 
-void test_tensor_does_not_use_pool_by_default() {
-    // 接缝是显式的、默认关闭的：构造/销毁一批张量不应让池表增长。
-    // 若有人把 PooledAllocator 设为 Tensor 的默认分配器，这条会立刻失败
-    // ——那是一次需要 benchmark 支撑的决定，不该悄悄发生。
-    const std::size_t before = memory::MemoryPool::instance().size_classes();
+void test_tensor_uses_pooled_allocator() {
+    // Tensor 默认走池化分配器。这不是性能洁癖，是实测逼出来的决定——
+    // 图执行每轮都新建/释放 4MB 中间张量，直连分配会落进 glibc 的
+    // mmap/munmap 路径，每轮 2016 次缺页、占掉约 75% 的执行时间。
+    // 池化后缺页归零，扇出图 4.39 -> 0.99 ms/轮（4.4 倍）。
+    //
+    // 证据与推理见 docs/设计问题与取舍.md。若有人把 Tensor 的分配器改回
+    // AlignedAllocator，这条会立刻失败。
+    //
+    // 断言用"同一尺寸两次分配拿到同一地址"——这是复用的直接证据，
+    // 不像池表计数那样会被其它测试的分配行为干扰。
+    // 7919 是质数，避免与其它用例的尺寸撞档。
+    void* first = nullptr;
     {
-        std::vector<tensor::Tensor<float>> ts;
-        for (int i = 0; i < 8; ++i) ts.emplace_back(tensor::Shape({static_cast<std::size_t>(i + 1)}));
+        tensor::Tensor<float> t(tensor::Shape({7919}));
+        first = t.data();
     }
-    CHECK_EQ(memory::MemoryPool::instance().size_classes(), before);
+    {
+        tensor::Tensor<float> t(tensor::Shape({7919}));
+        CHECK(t.data() == first);
+    }
 }
 
 } // namespace
@@ -122,6 +133,6 @@ int main() {
     test_pool_does_not_share_across_sizes();
     test_pooled_allocator_with_vector();
     test_pooled_allocator_records_allocations();
-    test_tensor_does_not_use_pool_by_default();
+    test_tensor_uses_pooled_allocator();   // 放最后：它会给池表建档，别影响其它用例
     return flux_test::summary();
 }
