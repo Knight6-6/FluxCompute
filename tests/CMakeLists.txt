@@ -11,6 +11,7 @@ set(test_sources
     test_min
     test_sort
     test_rank
+    test_memory
 )
 
 foreach(t ${test_sources})
@@ -18,3 +19,9 @@ foreach(t ${test_sources})
     target_link_libraries(${t} PRIVATE flux)
     add_test(NAME ${t} COMMAND ${t})
 endforeach()
+
+# test_memory 会主动探测"分配失败"这条路径。ASan 默认对超大分配直接 abort，
+# 库自己的 bad_alloc 分支根本走不到；让它返回 NULL 才能覆盖到。
+# 非消毒器构建下这个环境变量不起作用，无副作用。
+set_tests_properties(test_memory PROPERTIES
+    ENVIRONMENT "ASAN_OPTIONS=allocator_may_return_null=1")
