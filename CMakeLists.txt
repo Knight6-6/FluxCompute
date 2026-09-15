@@ -37,9 +37,24 @@ else()
     message(STATUS "FluxCompute: OpenMP not found (simd pragmas become no-ops)")
 endif()
 
+# 同一套头文件，但不链 OpenMP：`#pragma omp simd` 会被编译器忽略。
+# 仅供 benchmark 做对照，用来量化这些提示到底值多少——见
+# benchmarks/bench_elementwise.cpp。
+add_library(flux_no_omp INTERFACE)
+target_include_directories(flux_no_omp INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+)
+target_compile_features(flux_no_omp INTERFACE cxx_std_17)
+# 没有 -fopenmp 时编译器会就每个 `#pragma omp simd` 报 -Wunknown-pragmas。
+# 这正是要对照的现象本身，不是问题，因此在对照目标上关掉这条告警。
+if(NOT MSVC)
+    target_compile_options(flux_no_omp INTERFACE -Wno-unknown-pragmas)
+endif()
+
 # ------------------------------------------------------------------
-# 测试与示例
+# 测试、示例与基准
 # ------------------------------------------------------------------
 enable_testing()
 add_subdirectory(tests)
 add_subdirectory(examples)
+add_subdirectory(benchmarks)
