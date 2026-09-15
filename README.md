@@ -414,12 +414,11 @@ FluxCompute/
 
 | 目录 | 作用 |
 |---|---|
-| `include/` | 对外暴露的头文件 |
-| `src/` | 核心实现 |
-| `tests/` | 正确性测试 |
+| `include/` | 全部实现（本库是 header-only，`src/` 下仅有占位） |
+| `tests/` | 正确性测试，注册进 CTest |
 | `examples/` | 使用示例、量化验证 |
-| `benchmarks/` | 性能测试 |
-| `docs/` | 设计文档 |
+| `benchmarks/` | 性能测试，**不注册**进 CTest |
+| `docs/` | 设计文档，见 [docs/README.md](docs/README.md) |
 
 其中：
 
