@@ -1,0 +1,57 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+
+  "configurePresets": [
+    {
+      "name": "release",
+      "displayName": "Release（默认：测试 + 基准）",
+      "description": "常规构建。必须用 Release 跑基准，Debug 下的数字没有意义。",
+      "binaryDir": "${sourceDir}/build/release",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "isa",
+      "displayName": "Release + 运行时指令集分发",
+      "description": "打开 FLUX_ENABLE_ISA_DISPATCH。归约内核按 CPU 能力在运行时选实现，见 docs/03 第五节。",
+      "binaryDir": "${sourceDir}/build/isa",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_FLAGS": "-DFLUX_ENABLE_ISA_DISPATCH"
+      }
+    },
+    {
+      "name": "san",
+      "displayName": "Debug + ASan/UBSan",
+      "description": "内存错误与未定义行为。",
+      "binaryDir": "${sourceDir}/build/san",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer -g"
+      }
+    },
+    {
+      "name": "tsan",
+      "displayName": "Debug + ThreadSanitizer",
+      "description": "数据竞争。ASan 查不出竞争，并行/异步路径必查。注意需要 setarch -R，见 docs/05 第 3.8 节。",
+      "binaryDir": "${sourceDir}/build/tsan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_FLAGS": "-fsanitize=thread -g -O1"
+      }
+    }
+  ],
+
+  "buildPresets": [
+    { "name": "release", "configurePreset": "release" },
+    { "name": "isa",     "configurePreset": "isa" },
+    { "name": "san",     "configurePreset": "san" },
+    { "name": "tsan",    "configurePreset": "tsan" }
+  ],
+
+  "testPresets": [
+    { "name": "release", "configurePreset": "release", "output": { "outputOnFailure": true } },
+    { "name": "isa",     "configurePreset": "isa",     "output": { "outputOnFailure": true } },
+    { "name": "san",     "configurePreset": "san",     "output": { "outputOnFailure": true } }
+  ]
+}

@@ -449,6 +449,28 @@ FluxCompute/
 | `examples/` | 使用示例、量化验证 |
 | `benchmarks/` | 性能测试，**不注册**进 CTest |
 | `docs/` | 设计文档，见 [docs/README.md](docs/README.md) |
+| `scripts/` | `check.sh`：一次跑完全部四种构建与测试 |
+
+### 构建与运行
+
+四种配置统一放在 `build/` 下按预设名分层，定义在 `CMakePresets.json`：
+
+```bash
+cmake --preset release && cmake --build --preset release   # 常规（测试 + 基准）
+ctest --test-dir build/release
+
+./build/release/examples/test_framework                    # 端到端示例
+./build/release/benchmarks/bench_executor                  # 性能基准
+```
+
+| 预设 | 用途 |
+|---|---|
+| `release` | 常规构建。**跑基准必须用它**，Debug 下的数字没有意义 |
+| `isa` | 打开运行时指令集分发（`-DFLUX_ENABLE_ISA_DISPATCH`），见 [docs/03](docs/03-算子与内核.md) |
+| `san` | ASan + UBSan |
+| `tsan` | ThreadSanitizer，并行/异步路径必查（ASan 查不出数据竞争） |
+
+提交前跑一次 `./scripts/check.sh`，四种全过。
 
 其中：
 
