@@ -22,6 +22,16 @@ class MemoryPool {
 public:
     static constexpr std::size_t kAlignment = 64;
 
+    // 池内保留字节的上限，超出的归还给 OS 而不是继续攒着。
+    //
+    // 为什么需要这个上限：池按字节尺寸归档，尺寸固定时占用会收敛，
+    // 但**尺寸从不重复**的负载（例如"筛选后标的数每天不同"）会让每个
+    // 新尺寸都留下一个永远不会被复用的块。实测那种场景下 RSS 线性增长、
+    // 不收敛（每轮约 2.3 MB），对长期运行的进程是个隐患。
+    //
+    // 256 MiB 对单机量化负载足够覆盖工作集；需要更大可调 set_max_pooled_bytes。
+    static constexpr std::size_t kDefaultMaxPooledBytes = std::size_t(256) << 20;
+
     static MemoryPool& instance() {
         static MemoryPool pool;   // C++11 起函数局部静态的初始化是线程安全的
         return pool;
@@ -39,6 +49,7 @@ public:
         if (it != free_blocks_.end() && !it->second.empty()) {
             void* ptr = it->second.back();
             it->second.pop_back();
+            pooled_bytes_ -= bytes;
             return ptr;
         }
 
@@ -56,7 +67,13 @@ public:
         if (!ptr) return;
         try {
             std::lock_guard<std::mutex> lock(mutex_);
+            // 超过上限就还给 OS。这样池的占用有界，不会因尺寸多变而无界增长。
+            if (pooled_bytes_ + bytes > max_pooled_bytes_) {
+                release_to_os(ptr);
+                return;
+            }
             free_blocks_[bytes].push_back(ptr);   // 这里插入是对的：确实要记这个尺寸
+            pooled_bytes_ += bytes;
         } catch (...) {
             // deallocate 是 noexcept 路径（容器依赖这一点），池表扩容失败时
             // 不能抛。退回给 OS：宁可不复用，也不在释放路径上终止进程。
@@ -68,6 +85,24 @@ public:
     std::size_t size_classes() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return free_blocks_.size();
+    }
+
+    // 观测用：池内当前保留的字节数。
+    std::size_t pooled_bytes() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return pooled_bytes_;
+    }
+
+    // 调整保留上限。设得比当前占用小不会立刻释放，只是此后归还的块不再入池，
+    // 占用会随复用自然降下来。
+    void set_max_pooled_bytes(std::size_t bytes) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        max_pooled_bytes_ = bytes;
+    }
+
+    std::size_t max_pooled_bytes() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return max_pooled_bytes_;
     }
 
     ~MemoryPool() {
@@ -87,6 +122,8 @@ private:
 
     mutable std::mutex mutex_;
     std::unordered_map<std::size_t, std::vector<void*>> free_blocks_;
+    std::size_t pooled_bytes_ = 0;                            // 各空闲链上的字节总和
+    std::size_t max_pooled_bytes_ = kDefaultMaxPooledBytes;
 };
 
 // 走 MemoryPool 的分配器。**它就是 Tensor 的默认分配器。**

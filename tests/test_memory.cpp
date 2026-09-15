@@ -1,6 +1,7 @@
 #include <flux/flux.hpp>
 #include "test_util.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <limits>
 #include <new>
@@ -100,6 +101,46 @@ void test_pooled_allocator_records_allocations() {
     CHECK_EQ(after.calls - before.calls, static_cast<std::size_t>(1));
 }
 
+void test_pool_cap_zero_disables_pooling() {
+    // 上限为 0 时任何块都不入池，直接还给 OS——这是上限机制最直接的验证，
+    // 且不受池的历史状态影响（断言的是"不增长"而非某个绝对值）。
+    auto& pool = memory::MemoryPool::instance();
+    const std::size_t saved = pool.max_pooled_bytes();
+
+    pool.set_max_pooled_bytes(0);
+    const std::size_t before = pool.pooled_bytes();
+
+    void* p = pool.allocate(8192);
+    pool.deallocate(p, 8192);
+    CHECK_EQ(pool.pooled_bytes(), before);
+
+    pool.set_max_pooled_bytes(saved);
+}
+
+void test_pool_bounded_with_never_repeating_sizes() {
+    // 回归：池按字节尺寸归档，尺寸从不重复的负载会让每个新尺寸都留下一个
+    // 永不复用的块。实测那种场景下 RSS 线性增长、不收敛（每轮约 2.3 MB）。
+    // 上限保证占用有界。
+    auto& pool = memory::MemoryPool::instance();
+    const std::size_t saved = pool.max_pooled_bytes();
+    const std::size_t cap = 128 * 1024;
+
+    const std::size_t before = pool.pooled_bytes();
+    pool.set_max_pooled_bytes(cap);
+
+    for (int round = 0; round < 64; ++round) {
+        // 每轮尺寸都不同，保证不复用任何尺寸档
+        const std::size_t n = 1000 + static_cast<std::size_t>(round) * 37 + 1;
+        tensor::Tensor<float> t(tensor::Shape({n}));
+        t[0] = 1.f;
+    }   // 析构时归还给池
+
+    // 上限生效：占用不会超过 max(原有, 上限)
+    CHECK(pool.pooled_bytes() <= std::max(before, cap));
+
+    pool.set_max_pooled_bytes(saved);
+}
+
 void test_tensor_uses_pooled_allocator() {
     // Tensor 默认走池化分配器。这不是性能洁癖，是实测逼出来的决定——
     // 图执行每轮都新建/释放 4MB 中间张量，直连分配会落进 glibc 的
@@ -134,5 +175,8 @@ int main() {
     test_pooled_allocator_with_vector();
     test_pooled_allocator_records_allocations();
     test_tensor_uses_pooled_allocator();   // 放最后：它会给池表建档，别影响其它用例
+    // 这两项会临时改上限，也放最后，避免影响其它用例的池行为
+    test_pool_cap_zero_disables_pooling();
+    test_pool_bounded_with_never_repeating_sizes();
     return flux_test::summary();
 }
