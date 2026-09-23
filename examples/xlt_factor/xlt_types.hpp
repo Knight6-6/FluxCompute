@@ -303,7 +303,7 @@ public:
 #if defined(__linux__) || defined(__unix__) || defined(__APPLE__)
         int fd = ::open(bin_path.c_str(), O_RDONLY);
         if (fd < 0) {
-            throw std::runtime_error("无法打开二进制 dump 归档文件: " + bin_path);
+            throw std::runtime_error("无法打开二进制 dump 归档文件: " + bin_path + " (" + std::strerror(errno) + ")");
         }
         struct stat st;
         if (::fstat(fd, &st) != 0 || st.st_size < 64) {
