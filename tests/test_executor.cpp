@@ -795,6 +795,45 @@ void test_parallel_propagates_exception_waits_for_all() {
     CHECK(slow_completed.load());
 }
 
+void test_affinity_and_numa() {
+    int cpu = runtime::get_current_cpu();
+    int numa = runtime::get_current_numa_node();
+    CHECK(cpu >= 0);
+    CHECK(numa >= 0);
+
+    // 测试设置当前核心与 NUMA 内存节点
+    bool aff_ok = runtime::set_thread_affinity(cpu);
+    CHECK(aff_ok);
+    bool numa_ok = runtime::set_thread_numa_node(numa);
+    CHECK(numa_ok);
+    bool bind_ok = runtime::bind_thread(cpu, numa);
+    CHECK(bind_ok);
+}
+
+void test_thread_pool_pinned_workers() {
+    // 启动 2 个绑核线程
+    int cur_cpu = runtime::get_current_cpu();
+    runtime::ThreadPool pool({cur_cpu, (cur_cpu + 1) % 16}, /*auto_bind_numa=*/true);
+    CHECK_EQ(pool.size(), std::size_t(2));
+
+    auto fut1 = pool.enqueue([] {
+        int c = runtime::get_current_cpu();
+        int n = runtime::get_current_numa_node();
+        return (c >= 0 && n >= 0);
+    });
+    CHECK(fut1.get());
+
+    // 使用 ThreadConfig 精细化配置
+    std::vector<runtime::ThreadConfig> cfgs = {
+        {cur_cpu, 0},
+        {-1, -1}
+    };
+    runtime::ThreadPool custom_pool(cfgs);
+    CHECK_EQ(custom_pool.size(), std::size_t(2));
+    auto fut2 = custom_pool.enqueue([] { return 100; });
+    CHECK_EQ(fut2.get(), 100);
+}
+
 } // namespace
 
 int main() {
@@ -827,5 +866,7 @@ int main() {
     test_async_multiple_tasks_concurrently();
     test_thread_pool_zero_threads();
     test_null_node_guards();
+    test_affinity_and_numa();
+    test_thread_pool_pinned_workers();
     return flux_test::summary();
 }

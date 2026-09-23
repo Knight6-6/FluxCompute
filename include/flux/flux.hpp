@@ -34,6 +34,7 @@
 #include <flux/memory/aligned_allocator.hpp>
 #include <flux/memory/memory_pool.hpp>
 
+#include <flux/runtime/affinity.hpp>
 #include <flux/runtime/thread_pool.hpp>
 #include <flux/runtime/executor.hpp>
 

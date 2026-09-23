@@ -56,13 +56,15 @@ int main() {
     double seq_us = std::chrono::duration<double, std::micro>(t1 - t0).count();
     std::cout << "  -> 顺序执行 (Sequential Executor) 完成, 耗时: " << std::fixed << std::setprecision(2) << seq_us << " us\n";
 
-    // 4. 并行执行对比验证 (4 线程)
-    runtime::ThreadPool pool(4);
+    // 4. 并行执行对比验证 (显式演示绑核与 NUMA 感知)
+    std::vector<int> pinned_cores = {2, 3, 4, 5};
+    runtime::ThreadPool pool(pinned_cores, /*auto_bind_numa=*/true);
     auto t2 = std::chrono::high_resolution_clock::now();
     XltFactorResult res_par = pipeline.run_parallel(batch, pool);
     auto t3 = std::chrono::high_resolution_clock::now();
     double par_us = std::chrono::duration<double, std::micro>(t3 - t2).count();
-    std::cout << "  -> 依赖层并行执行 (Parallel Executor, 4 线程) 完成, 耗时: " << std::fixed << std::setprecision(2) << par_us << " us\n\n";
+    std::cout << "  -> 依赖层并行执行 (Pinned Cores {2,3,4,5} + NUMA 内存锁定) 完成, 耗时: "
+              << std::fixed << std::setprecision(2) << par_us << " us\n\n";
 
     // 5. 因子数学口径严格检验
     std::cout << "[Step 4] 校验 xltwin 业务口径与数学守恒性..." << std::endl;
