@@ -72,12 +72,33 @@ void test_tensor_is_64_byte_aligned() {
     CHECK_EQ(reinterpret_cast<std::uintptr_t>(t.data()) % 64, static_cast<std::uintptr_t>(0));
 }
 
+void test_shape_stride_out_of_range() {
+    tensor::Shape s_empty({});
+    bool threw = false;
+    try {
+        (void)s_empty.stride(0);
+    } catch (const std::out_of_range&) {
+        threw = true;
+    }
+    CHECK(threw);
+
+    tensor::Shape s({2, 3});
+    threw = false;
+    try {
+        (void)s.stride(5);
+    } catch (const std::out_of_range&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
 } // namespace
 
 int main() {
     test_shape_numel_and_strides();
     test_shape_equality();
     test_shape_zero_dim_does_not_crash();
+    test_shape_stride_out_of_range();
     test_tensor_zero_dim();
     test_tensor_element_access();
     test_tensor_size_mismatch_throws();

@@ -60,6 +60,19 @@ void test_shift_axis_out_of_range() {
     CHECK(threw);
 }
 
+void test_shift_large_offset() {
+    tensor::Tensor<float> t(tensor::Shape({3}), {1, 2, 3});
+    auto r = ops::shift(t, 100);
+    CHECK(std::isnan(r[0]));
+    CHECK(std::isnan(r[1]));
+    CHECK(std::isnan(r[2]));
+
+    auto r_neg = ops::shift(t, -100);
+    CHECK(std::isnan(r_neg[0]));
+    CHECK(std::isnan(r_neg[1]));
+    CHECK(std::isnan(r_neg[2]));
+}
+
 } // namespace
 
 int main() {
@@ -68,5 +81,6 @@ int main() {
     test_shift_custom_fill();
     test_shift_axis1_2d();
     test_shift_axis_out_of_range();
+    test_shift_large_offset();
     return flux_test::summary();
 }

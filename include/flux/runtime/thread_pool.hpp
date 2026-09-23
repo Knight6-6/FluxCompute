@@ -19,6 +19,10 @@ private:
 
 public:
     explicit ThreadPool(std::size_t threads = std::thread::hardware_concurrency()) {
+        // C++ 标准规定 hardware_concurrency() 在无法探测核心数时允许返回 0
+        // （例如无权限读取 sysfs/affinity 的容器、沙箱）。
+        // 0 线程会导致入队任务永远无法被 worker 消费，在 future.get() 处产生死锁挂起。
+        if (threads == 0) threads = 1;
         for (std::size_t i = 0; i < threads; ++i) {
             workers_.emplace_back([this] {
                 while (true) {

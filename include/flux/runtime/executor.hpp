@@ -112,6 +112,9 @@ public:
 
     // 运行前为 Input 节点注入数据。重复设置时最后一次生效。
     void set_input(const std::shared_ptr<graph::Node<T>>& node, const tensor::Tensor<T>& value) {
+        if (!node) {
+            throw std::invalid_argument("set_input: node must not be null");
+        }
         if (node->type != graph::NodeType::Input) {
             throw std::runtime_error("set_input: node '" + node->name + "' is not an Input");
         }
@@ -188,8 +191,17 @@ public:
                 }));
             }
 
-            // 层内屏障。节点里抛出的异常会在这里重抛。
-            for (auto& f : futures) f.get();
+            // 层内屏障。必须等整层所有任务结束才能离开栈帧，避免某个任务先抛异常
+            // 导致 results / layer 提前析构、后台仍在跑的 worker 发生 use-after-free 踩栈。
+            std::exception_ptr first_exc = nullptr;
+            for (auto& f : futures) {
+                try {
+                    f.get();
+                } catch (...) {
+                    if (!first_exc) first_exc = std::current_exception();
+                }
+            }
+            if (first_exc) std::rethrow_exception(first_exc);
 
             for (std::size_t i = 0; i < layer.size(); ++i) {
                 values_.emplace(layer[i]->id, std::move(results[i]));
@@ -253,6 +265,9 @@ public:
     // 跨 run() 也成立——第二次 run 只是让 executor 不再持有它，不影响调用方这一份。
     // 张量发布后不可变，要改请先拷贝。
     tensor::TensorPtr<T> get_output(const std::shared_ptr<graph::Node<T>>& node) const {
+        if (!node) {
+            throw std::invalid_argument("get_output: node must not be null");
+        }
         auto it = values_.find(node->id);
         if (it == values_.end()) {
             throw std::runtime_error("executor: no output for node '" + node->name

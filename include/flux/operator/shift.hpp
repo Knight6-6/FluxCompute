@@ -11,7 +11,7 @@ template <typename T>
 class Shift {
 public:
     tensor::Tensor<T> operator()(const tensor::Tensor<T>& input, 
-                                 int offset, 
+                                 std::ptrdiff_t offset, 
                                  std::size_t axis = 0, 
                                  T fill_value = std::numeric_limits<T>::quiet_NaN()) const {
         
@@ -31,8 +31,8 @@ public:
 
 template <typename T>
 tensor::Tensor<T> shift(const tensor::Tensor<T>& input, 
-                        int offset, 
-                                std::size_t axis = 0, 
+                        std::ptrdiff_t offset, 
+                        std::size_t axis = 0, 
                         T fill_value = std::numeric_limits<T>::quiet_NaN()) {
     return Shift<T>{}(input, offset, axis, fill_value);
 }

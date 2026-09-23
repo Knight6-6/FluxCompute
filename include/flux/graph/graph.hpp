@@ -26,12 +26,18 @@ public:
     }
 
     void add_edge(const std::shared_ptr<Node<T>>& src, const std::shared_ptr<Node<T>>& dst) {
+        if (!src || !dst) {
+            throw std::invalid_argument("add_edge: src and dst nodes must not be null");
+        }
         src->outputs.push_back(dst);
         dst->inputs.push_back(src);
     }
 
     // 给 Operator 节点绑定可执行闭包。绑定时机在构建期，便于尽早发现漏绑。
     void bind_op(const std::shared_ptr<Node<T>>& node, typename Node<T>::OpFn fn) {
+        if (!node) {
+            throw std::invalid_argument("bind_op: node must not be null");
+        }
         if (node->type != NodeType::Operator) {
             throw std::runtime_error("bind_op: node '" + node->name + "' is not an Operator");
         }

@@ -2,6 +2,7 @@
 
 #include <vector>
 #include <cstddef>
+#include <stdexcept>
 
 namespace flux::tensor {
 
@@ -37,6 +38,9 @@ public:
     }
 
     std::size_t stride(std::size_t index) const {
+        if (index >= strides_.size()) {
+            throw std::out_of_range("Shape::stride: index out of range");
+        }
         return strides_[index];
     }
 

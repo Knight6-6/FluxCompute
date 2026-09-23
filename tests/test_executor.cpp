@@ -7,6 +7,9 @@
 #include <memory>
 #include <type_traits>
 #include <vector>
+#include <thread>
+#include <chrono>
+#include <atomic>
 
 using namespace flux;
 
@@ -711,6 +714,87 @@ void test_async_multiple_tasks_concurrently() {
     }
 }
 
+void test_thread_pool_zero_threads() {
+    // 即使入参为 0 或硬件并发探测为 0，也不应产生死锁挂起，应至少有 1 个 worker 线程
+    runtime::ThreadPool pool(0);
+    auto fut = pool.enqueue([] { return 42; });
+    CHECK_EQ(fut.get(), 42);
+}
+
+void test_null_node_guards() {
+    runtime::Executor<float> ex;
+    tensor::Tensor<float> t(tensor::Shape({2}), {1.f, 2.f});
+    bool threw_set = false;
+    try {
+        ex.set_input(nullptr, t);
+    } catch (const std::invalid_argument&) {
+        threw_set = true;
+    }
+    CHECK(threw_set);
+
+    bool threw_get = false;
+    try {
+        (void)ex.get_output(nullptr);
+    } catch (const std::invalid_argument&) {
+        threw_get = true;
+    }
+    CHECK(threw_get);
+
+    graph::Graph<float> g;
+    auto node = g.create_node("a", graph::NodeType::Operator);
+    bool threw_edge = false;
+    try {
+        g.add_edge(nullptr, node);
+    } catch (const std::invalid_argument&) {
+        threw_edge = true;
+    }
+    CHECK(threw_edge);
+
+    bool threw_bind = false;
+    try {
+        g.bind_op(nullptr, [](const auto&) { return tensor::Tensor<float>(tensor::Shape({1})); });
+    } catch (const std::invalid_argument&) {
+        threw_bind = true;
+    }
+    CHECK(threw_bind);
+}
+
+void test_parallel_propagates_exception_waits_for_all() {
+    // 层内某节点抛出异常时，屏障必须等待层内其他耗时任务全部结束，
+    // 绝不能提前展开栈帧导致 results 局部变量发生 use-after-free
+    graph::Graph<float> g;
+    auto in   = g.create_node("in", graph::NodeType::Input);
+    auto bad  = g.create_node("bad", graph::NodeType::Operator);
+    auto slow = g.create_node("slow", graph::NodeType::Operator);
+    auto o1   = g.create_node("o1", graph::NodeType::Output);
+    auto o2   = g.create_node("o2", graph::NodeType::Output);
+    g.add_edge(in, bad);   g.add_edge(in, slow);
+    g.add_edge(bad, o1);   g.add_edge(slow, o2);
+
+    g.bind_op(bad, [](const std::vector<tensor::TensorPtr<float>>&) -> tensor::Tensor<float> {
+        throw std::runtime_error("bad node error");
+    });
+    std::atomic<bool> slow_completed{false};
+    g.bind_op(slow, [&slow_completed](const std::vector<tensor::TensorPtr<float>>& ins) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        slow_completed.store(true);
+        return *ins[0];
+    });
+
+    runtime::Executor<float> ex;
+    ex.set_input(in, tensor::Tensor<float>(tensor::Shape({2}), {1.f, 2.f}));
+    runtime::ThreadPool pool(2);
+
+    bool threw = false;
+    try {
+        ex.run_parallel(g, pool);
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    CHECK(threw);
+    CHECK(slow_completed.load());
+}
+
 } // namespace
 
 int main() {
@@ -736,9 +820,12 @@ int main() {
     test_parallel_matches_sequential();
     test_parallel_chain_gives_same_result();
     test_parallel_propagates_exception();
+    test_parallel_propagates_exception_waits_for_all();
     test_parallel_rerun_is_stable();
     test_async_matches_sync();
     test_async_propagates_exception();
     test_async_multiple_tasks_concurrently();
+    test_thread_pool_zero_threads();
+    test_null_node_guards();
     return flux_test::summary();
 }

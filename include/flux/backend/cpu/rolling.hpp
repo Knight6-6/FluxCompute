@@ -14,6 +14,9 @@ void rolling_mean_axis(const T* input, T* output,
                         std::size_t window,
                         std::size_t min_periods,
                         T fill_value) {
+
+    // 与 rolling_std_axis 一致：累加器提升到 double，避免长序列 float 滑窗加减时发生浮点精度漂移
+    using Acc = std::conditional_t<std::is_same<T, long double>::value, long double, double>;
     
     for (std::size_t o = 0; o < outer_size; ++o) {
         for (std::size_t i = 0; i < inner_size; ++i) {
@@ -21,27 +24,31 @@ void rolling_mean_axis(const T* input, T* output,
             const std::size_t stride = inner_size;
             const std::size_t base_offset = o * axis_size * inner_size + i;
 
-            T current_sum = T{0};
+            Acc current_sum = Acc{0};
             std::size_t valid_count = 0;
 
             for (std::size_t a = 0; a < axis_size; ++a) {
                 const T new_val = input[base_offset + a * stride];
                 
                 if (!std::isnan(new_val)) {
-                    current_sum += new_val;
+                    current_sum += static_cast<Acc>(new_val);
                     valid_count++;
                 }
 
                 if (a >= window) {
                     const T old_val = input[base_offset + (a - window) * stride];
                     if (!std::isnan(old_val)) {
-                        current_sum -= old_val;
+                        current_sum -= static_cast<Acc>(old_val);
                         valid_count--;
                     }
                 }
 
+                if (valid_count == 0) {
+                    current_sum = Acc{0};
+                }
+
                 if (valid_count >= min_periods && valid_count > 0) {
-                    output[base_offset + a * stride] = current_sum / static_cast<T>(valid_count);
+                    output[base_offset + a * stride] = static_cast<T>(current_sum / static_cast<Acc>(valid_count));
                 } else {
                     output[base_offset + a * stride] = fill_value;
                 }

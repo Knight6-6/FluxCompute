@@ -165,12 +165,24 @@ void test_axis_out_of_range() {
     CHECK(threw);
 }
 
+void test_rolling_mean_long_series_accuracy() {
+    // 验证长序列（10000 长度）加减滑窗时不会发生浮点漂移
+    const std::size_t n = 10000;
+    tensor::Tensor<float> t(tensor::Shape({n}));
+    for (std::size_t i = 0; i < n; ++i) t[i] = 123.456f;
+    auto r = ops::rolling_mean(t, 20);
+    for (std::size_t i = 19; i < n; ++i) {
+        CHECK_NEAR(r[i], 123.456f, 1e-4f);
+    }
+}
+
 } // namespace
 
 int main() {
     test_rolling_mean_basic();
     test_rolling_mean_min_periods();
     test_rolling_mean_nan_skip();
+    test_rolling_mean_long_series_accuracy();
     test_rolling_std_basic();
     test_rolling_std_ddof();
     test_rolling_std_constant_series_is_zero();
