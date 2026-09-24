@@ -83,6 +83,7 @@ void print_stat_row(const std::string& name, const FactorStats& s) {
 int main(int argc, char** argv) {
     std::string bin_path;
     std::size_t limit_windows = 0;
+    std::size_t num_stocks = 5;
     std::vector<int> pinned_cores = {2, 3, 4, 5};
     bool auto_bind_numa = true;
 
@@ -92,6 +93,8 @@ int main(int argc, char** argv) {
             bin_path = argv[++i];
         } else if ((arg == "--limit" || arg == "-l") && i + 1 < argc) {
             limit_windows = static_cast<std::size_t>(std::stoul(argv[++i]));
+        } else if ((arg == "--stocks" || arg == "-n") && i + 1 < argc) {
+            num_stocks = static_cast<std::size_t>(std::stoul(argv[++i]));
         } else if ((arg == "--cores" || arg == "-c") && i + 1 < argc) {
             pinned_cores = parse_cores(argv[++i]);
         } else if (arg == "--no-numa") {
@@ -101,6 +104,7 @@ int main(int argc, char** argv) {
                       << "选项:\n"
                       << "  --bin, -b <file>       指定真实回放产出的 win_raw.bin 归档路径\n"
                       << "  --limit, -l <T>        限制加载的最大时间窗口数 (0 为全量加载)\n"
+                      << "  --stocks, -n <N>       指定 Mock 仿真模式下的股票标的数 (默认: 5)\n"
                       << "  --cores, -c <c1,c2..>  指定线程池绑定的 CPU 核心 (默认: 2,3,4,5)\n"
                       << "  --no-numa              禁用 NUMA 内存亲和绑定 (默认开启)\n"
                       << "  --help, -h             显示本帮助信息\n";
@@ -125,7 +129,7 @@ int main(int argc, char** argv) {
     } else {
         std::cout << "[Step 1] 生成微观结构聚合仿真状态 (严格对齐 XltWinState / Parquet 规范)..." << std::endl;
         const std::size_t T = (limit_windows > 0) ? limit_windows : 30;
-        const std::size_t N = 5;
+        const std::size_t N = (num_stocks > 0) ? num_stocks : 5;
         batch = XltDataLoader::generate_mock_batch(T, N);
     }
 

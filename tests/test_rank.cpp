@@ -77,6 +77,46 @@ void test_rank_int_trunc() {
     CHECK_EQ(r[3], 4);
 }
 
+void test_rank_large_scale() {
+    // 仿真真实 A 股 26 窗口 x 7370 标的
+    const std::size_t T = 26;
+    const std::size_t N = 7370;
+    tensor::Tensor<float> tensor(tensor::Shape({T, N}));
+    for (std::size_t t = 0; t < T; ++t) {
+        for (std::size_t n = 0; n < N; ++n) {
+            if (n % 10 == 0) {
+                tensor[t * N + n] = std::numeric_limits<float>::quiet_NaN();
+            } else if (n % 5 == 0) {
+                tensor[t * N + n] = 100.0f; // 大量并列
+            } else {
+                tensor[t * N + n] = static_cast<float>((n * 17 + t * 31) % 10000);
+            }
+        }
+    }
+    auto r = ops::rank(tensor, 1, true); // 横截面百分比排序
+    CHECK(r.shape() == tensor::Shape({T, N}));
+
+    for (std::size_t t = 0; t < T; ++t) {
+        double sum = 0.0;
+        std::size_t valid = 0;
+        for (std::size_t n = 0; n < N; ++n) {
+            float v = r[t * N + n];
+            if (n % 10 == 0) {
+                CHECK(std::isnan(v));
+            } else {
+                CHECK(!std::isnan(v));
+                CHECK(v > 0.0f && v <= 1.0f);
+                sum += v;
+                valid++;
+            }
+        }
+        CHECK(valid == N - (N + 9) / 10);
+        double mean = sum / valid;
+        // 均匀分布百分比均值严格接近 0.5
+        CHECK(std::abs(mean - 0.5) < 0.05);
+    }
+}
+
 void test_rank_axis_out_of_range() {
     tensor::Tensor<float> t(tensor::Shape({2, 2}), {1, 2, 3, 4});
     bool threw = false;
@@ -98,6 +138,7 @@ int main() {
     test_rank_2d_axis1_ties();
     test_rank_pct();
     test_rank_int_trunc();
+    test_rank_large_scale();
     test_rank_axis_out_of_range();
     return flux_test::summary();
 }

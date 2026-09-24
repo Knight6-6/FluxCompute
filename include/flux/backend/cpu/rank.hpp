@@ -3,11 +3,37 @@
 #include <cstddef>
 #include <cmath>
 #include <limits>
+#include <vector>
+#include <algorithm>
+#include <type_traits>
 
 namespace flux::backend::cpu {
 
+namespace detail {
+
+template <typename U>
+inline bool is_nan_value(const U& val) {
+    if constexpr (std::is_floating_point_v<U>) {
+        return std::isnan(val);
+    } else {
+        return false;
+    }
+}
+
+template <typename T>
+struct IndexedElement {
+    T val;
+    std::size_t orig_a;
+
+    bool operator<(const IndexedElement& other) const noexcept {
+        return val < other.val;
+    }
+};
+
+} // namespace detail
+
 // pandas method='average'：并列取平均名次；na_option='keep'：NaN 输出 NaN。
-// 计数法，每切片 O(N²)，正确性优先；后续可换基于排序的 O(N log N)。
+// 基于排序的 O(N log N) 算法，复用切片缓冲区避免堆分配。
 // 整数 T：std::isnan(int) 恒 false，NaN 分支永不进入；并列小数被 static_cast<T> 截断。
 template <typename T>
 void rank_axis(const T* input, T* output,
@@ -16,40 +42,60 @@ void rank_axis(const T* input, T* output,
                std::size_t inner_size,
                bool pct) {
 
+    if (axis_size == 0) return;
+
+    // 预分配缓冲区并在切片间复用，避免每次循环触发堆分配
+    std::vector<detail::IndexedElement<T>> elements;
+    elements.reserve(axis_size);
+
     for (std::size_t o = 0; o < outer_size; ++o) {
         for (std::size_t i = 0; i < inner_size; ++i) {
+            elements.clear();
 
-            // 切片内有效（非 NaN）个数，供 pct 归一化
-            std::size_t valid = 0;
-            for (std::size_t a = 0; a < axis_size; ++a) {
-                if (!std::isnan(input[(o * axis_size + a) * inner_size + i])) ++valid;
-            }
-
+            // 1. 过滤 NaN，收集非 NaN 元素及其原始轴向坐标
             for (std::size_t a = 0; a < axis_size; ++a) {
                 const std::size_t idx = (o * axis_size + a) * inner_size + i;
                 const T v = input[idx];
 
-                if (std::isnan(v)) {  // 整数 T 永不进入此分支
+                if (detail::is_nan_value(v)) {
                     output[idx] = std::numeric_limits<T>::quiet_NaN();
-                    continue;
+                } else {
+                    elements.push_back({v, a});
+                }
+            }
+
+            const std::size_t valid = elements.size();
+            if (valid == 0) {
+                continue;
+            }
+
+            // 2. 对有效元素排序 (O(N log N))
+            std::sort(elements.begin(), elements.end());
+
+            // 3. 统计并列 (ties) 并计算平均名次 (method='average')
+            std::size_t start = 0;
+            while (start < valid) {
+                std::size_t end = start + 1;
+                while (end < valid && elements[end].val == elements[start].val) {
+                    ++end;
                 }
 
-                std::size_t less = 0, equal = 0;
-                for (std::size_t b = 0; b < axis_size; ++b) {
-                    const T w = input[(o * axis_size + b) * inner_size + i];
-                    if (std::isnan(w)) continue;
-                    if (w < v) ++less;
-                    else if (w == v) ++equal;  // 含自身，equal >= 1
+                // 名次区间为 [start + 1, end]，平均名次为 ((start + 1) + end) / 2.0
+                double avg_rank = (static_cast<double>(start + 1) + static_cast<double>(end)) * 0.5;
+                if (pct) {
+                    avg_rank /= static_cast<double>(valid);
                 }
 
-                // 平均名次 = 1 + 比 v 小的个数 + (与 v 相等的个数 - 1) / 2
-                double rank_val = 1.0 + static_cast<double>(less)
-                                + (static_cast<double>(equal) - 1.0) / 2.0;
-                if (pct) rank_val /= static_cast<double>(valid);  // 本分支保证 valid >= 1
-                output[idx] = static_cast<T>(rank_val);
+                const T rank_val = static_cast<T>(avg_rank);
+                for (std::size_t k = start; k < end; ++k) {
+                    const std::size_t out_idx = (o * axis_size + elements[k].orig_a) * inner_size + i;
+                    output[out_idx] = rank_val;
+                }
+
+                start = end;
             }
         }
     }
 }
 
-}
+} // namespace flux::backend::cpu
